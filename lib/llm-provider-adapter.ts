@@ -1,6 +1,7 @@
 import type { LLMContentPart, LLMMessage } from "./llm-prompt-assembler";
 import type { ApiConfig, PresetConfig } from "./settings-types";
 import {
+    buildAnthropicMessagesUrl,
     buildChatCompletionsUrl,
     buildRequestHeaders,
     determineBaseUrl,
@@ -652,7 +653,7 @@ function buildAnthropicRequest(
     }
     markClaudeCacheBreakpoints(body, config);
     return {
-        url: `${baseUrl.replace(/\/$/, "")}/messages`,
+        url: buildAnthropicMessagesUrl(baseUrl),
         headers: buildRequestHeaders(config, baseUrl),
         body,
         providerKind: "anthropic",
