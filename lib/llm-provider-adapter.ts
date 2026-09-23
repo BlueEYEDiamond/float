@@ -441,6 +441,65 @@ function openAIContent(content: string | LLMContentPart[]): string | LLMContentP
     return content;
 }
 
+type CacheableMessage = { role: string; content: unknown };
+
+/** 为 Claude 请求标记可复用的前缀：系统提示词和本轮输入前的历史。 */
+function markClaudeCacheBreakpoints(body: Record<string, unknown>, config: ApiConfig): void {
+    const model = config.defaultModel.toLowerCase();
+    if (!model.includes("claude") && !model.includes("anthropic")) return;
+
+    const messages = body.messages as CacheableMessage[];
+    if (!Array.isArray(messages)) return;
+
+    if (typeof body.system === "string") {
+        body.system = markLastTextBlock(body.system);
+    } else {
+        const firstNonSystem = messages.findIndex(message => message.role !== "system");
+        const leadingSystem = firstNonSystem === -1 ? messages.length : firstNonSystem;
+        for (let index = leadingSystem - 1; index >= 0; index -= 1) {
+            const marked = markLastTextBlock(messages[index].content);
+            if (marked !== messages[index].content) {
+                messages[index].content = marked;
+                break;
+            }
+        }
+    }
+
+    // 最新 user 消息会随每轮变化；只在它之前的历史里放第二个断点。
+    let latestUser = -1;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        if (messages[index].role === "user") {
+            latestUser = index;
+            break;
+        }
+    }
+    for (let index = latestUser - 1; index >= 0; index -= 1) {
+        if (messages[index].role === "system" || messages[index].role === "tool") continue;
+        const marked = markLastTextBlock(messages[index].content);
+        if (marked !== messages[index].content) {
+            messages[index].content = marked;
+            break;
+        }
+    }
+}
+
+function markLastTextBlock(content: unknown): unknown {
+    const cacheControl = { type: "ephemeral" };
+    if (typeof content === "string") {
+        return content.trim() ? [{ type: "text", text: content, cache_control: cacheControl }] : content;
+    }
+    if (!Array.isArray(content)) return content;
+    for (let index = content.length - 1; index >= 0; index -= 1) {
+        const block = content[index];
+        if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
+            const marked = [...content];
+            marked[index] = { ...block, cache_control: cacheControl };
+            return marked;
+        }
+    }
+    return content;
+}
+
 function parseDataUrl(url: string): { mimeType: string; data: string } | null {
     const match = url.match(/^data:([^;,]+);base64,(.+)$/);
     if (!match) return null;
@@ -540,6 +599,7 @@ function buildOpenAICompatibleRequest(
             },
         }));
     }
+    markClaudeCacheBreakpoints(body, config);
     return {
         url: buildChatCompletionsUrl(baseUrl),
         headers: buildRequestHeaders(config, baseUrl),
@@ -590,6 +650,7 @@ function buildAnthropicRequest(
             input_schema: tool.parameters,
         }));
     }
+    markClaudeCacheBreakpoints(body, config);
     return {
         url: `${baseUrl.replace(/\/$/, "")}/messages`,
         headers: buildRequestHeaders(config, baseUrl),
