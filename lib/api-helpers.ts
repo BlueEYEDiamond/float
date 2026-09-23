@@ -40,22 +40,28 @@ export function buildChatCompletionsUrl(baseUrl: string): string {
     return `${baseUrl.replace(/\/$/, "")}/chat/completions`;
 }
 
+/** 自定义 Anthropic 地址允许填写 /v1 或完整端点，统一发送到 /messages。 */
+export function buildAnthropicMessagesUrl(baseUrl: string): string {
+    const root = baseUrl.trim().replace(/\/+$/, "").replace(/\/(?:chat\/completions|messages)$/i, "");
+    return `${root}/messages`;
+}
+
 /**
  * Build request headers for an API config.
  * Handles provider-specific headers (OpenRouter, Anthropic, etc.)
- * and custom proxy/relay sites that use standard Bearer auth.
+ * Anthropic 协议使用 x-api-key，其余 OpenAI 兼容服务使用 Bearer。
  */
 export function buildRequestHeaders(config: ApiConfig, baseUrl: string): Record<string, string> {
     const headers: Record<string, string> = {
         "Content-Type": "application/json",
     };
 
-    if (config.provider === "Anthropic" && !config.baseUrl) {
-        // Native Anthropic API uses x-api-key
+    if (config.provider === "Anthropic") {
+        // Anthropic 原生协议（含中转站）使用 x-api-key 和版本头。
         headers["x-api-key"] = config.apiKey;
         headers["anthropic-version"] = "2023-06-01";
     } else {
-        // All others (including Anthropic via proxy/relay) use Bearer token
+        // 其余 OpenAI 兼容服务使用 Bearer token。
         headers["Authorization"] = `Bearer ${config.apiKey}`;
     }
 
@@ -71,11 +77,10 @@ export function buildRequestHeaders(config: ApiConfig, baseUrl: string): Record<
 /**
  * Check if this provider uses the native Anthropic Messages API format
  * (not OpenAI-compatible chat/completions).
- * Only true for direct Anthropic API — proxies/relays that wrap Anthropic
- * behind OpenAI-compatible endpoints should use Custom provider + baseUrl.
+ * 选择 Anthropic 即使用原生协议；OpenAI 兼容中转站应选择 Custom。
  */
 export function isNativeAnthropicApi(config: ApiConfig): boolean {
-    return config.provider === "Anthropic" && !config.baseUrl;
+    return config.provider === "Anthropic";
 }
 
 /**
@@ -115,7 +120,7 @@ export async function simpleLLMCall(
 
         if (isNativeAnthropicApi(config)) {
             // Anthropic Messages API
-            fetchUrl = `${baseUrl.replace(/\/$/, "")}/messages`;
+            fetchUrl = buildAnthropicMessagesUrl(baseUrl);
             const anthropicMessages = messages
                 .filter(m => m.role !== "system")
                 .map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content }));
@@ -146,7 +151,7 @@ export async function simpleLLMCall(
                 },
             });
         } else {
-            // OpenAI-compatible (all others including proxies/relays/custom)
+            // OpenAI-compatible（包括 Custom 中转站）
             fetchUrl = buildChatCompletionsUrl(baseUrl);
             body = JSON.stringify({
                 model: config.defaultModel,

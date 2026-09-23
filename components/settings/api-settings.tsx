@@ -26,7 +26,7 @@ const DEFAULT_CONFIGS: ApiConfig[] = [
 ];
 
 function getNativeToolProtocolLabel(config: ApiConfig): string {
-    if (config.provider === "Anthropic" && !config.baseUrl) return "Anthropic";
+    if (config.provider === "Anthropic") return "Anthropic";
     if (config.provider === "Google") return "Gemini";
     return "OpenAI-compatible";
 }
@@ -333,6 +333,11 @@ export function ApiSettings() {
                                                 {config.provider === "Google" && (
                                                     <span style={{ color: "#888", marginLeft: 6, fontSize: "0.85em" }}>
                                                         中转站填 https://xxx/v1beta 走原生协议
+                                                    </span>
+                                                )}
+                                                {config.provider === "Anthropic" && (
+                                                    <span style={{ color: "#888", marginLeft: 6, fontSize: "0.85em" }}>
+                                                        中转站填 https://xxx/v1，使用原生 /messages 协议
                                                     </span>
                                                 )}
                                             </label>
