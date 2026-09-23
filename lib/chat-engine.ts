@@ -75,7 +75,7 @@ import { getWeekStartIso } from "./calendar-utils";
 import { buildCharacterTimeContext } from "./character-time";
 import { getPromptTimestampOptionsForTimeContext } from "./prompt-time";
 import { kvGet, kvSet, registerKvMigration } from "./kv-db";
-import { pushApiLog } from "./api-log-store";
+import { pushApiLog, type DebugInfo as ApiLogDebugInfo } from "./api-log-store";
 export { getApiLogs, clearApiLogs, type DebugInfo } from "./api-log-store";
 import { stripStateAndInnerForPrompt } from "./prompt-sanitizer";
 import { getInternalCapability, getInternalCapabilitySubToolDefinitions } from "./internal-capability-storage";
@@ -98,6 +98,70 @@ export class ChatEngineError extends Error {
         super(message);
         this.name = "ChatEngineError";
     }
+}
+
+type CacheDebug = NonNullable<ApiLogDebugInfo["cacheDebug"]>;
+
+/** 只统计请求结构：标识前文本字符数与工具定义大小，不记录正文。 */
+function cacheDebugForRequest(request: ReturnType<typeof buildProviderRequest>): CacheDebug {
+    const body = request.body;
+    const breakpoints: CacheDebug["breakpoints"] = [];
+    let prefixTextChars = 0;
+    const systemBlocks = Array.isArray(body.system) ? body.system : [body.system];
+    for (const block of systemBlocks) {
+        if (typeof block === "string") {
+            prefixTextChars += block.length;
+        } else if (block && typeof block === "object") {
+            const item = block as { text?: unknown; cache_control?: unknown };
+            if (typeof item.text === "string") prefixTextChars += item.text.length;
+            if (item.cache_control) breakpoints.push({ role: "system", messageIndex: -1, prefixTextChars });
+        }
+    }
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+        const message = messages[messageIndex] as { role?: string; content?: unknown };
+        const blocks = Array.isArray(message.content) ? message.content : [message.content];
+        for (const block of blocks) {
+            if (typeof block === "string") {
+                prefixTextChars += block.length;
+                continue;
+            }
+            if (!block || typeof block !== "object") continue;
+            const item = block as { text?: unknown; cache_control?: unknown };
+            if (typeof item.text === "string") prefixTextChars += item.text.length;
+            if (item.cache_control) {
+                breakpoints.push({ role: message.role ?? "", messageIndex, prefixTextChars });
+            }
+        }
+    }
+    const tools = Array.isArray(body.tools) ? body.tools : [];
+    return {
+        breakpoints,
+        totalTextChars: prefixTextChars,
+        toolCount: tools.length,
+        toolSchemaChars: tools.reduce<number>((sum, tool) => sum + JSON.stringify(tool).length, 0),
+    };
+}
+
+/** 兼容 Anthropic 与 OpenAI 风格中转站返回的缓存用量字段。 */
+function cacheUsageFromResponse(data: unknown): Pick<CacheDebug, "writtenTokens" | "readTokens"> {
+    if (!data || typeof data !== "object") return {};
+    const event = data as { usage?: unknown; message?: { usage?: unknown } };
+    const usage = event.usage ?? event.message?.usage;
+    if (!usage || typeof usage !== "object") return {};
+    const u = usage as Record<string, unknown>;
+    const details = u.prompt_tokens_details && typeof u.prompt_tokens_details === "object"
+        ? u.prompt_tokens_details as Record<string, unknown> : {};
+    const writtenTokens = typeof u.cache_creation_input_tokens === "number"
+        ? u.cache_creation_input_tokens
+        : typeof u.claude_cache_creation_5_m_tokens === "number" || typeof u.claude_cache_creation_1_h_tokens === "number"
+            ? (typeof u.claude_cache_creation_5_m_tokens === "number" ? u.claude_cache_creation_5_m_tokens : 0)
+                + (typeof u.claude_cache_creation_1_h_tokens === "number" ? u.claude_cache_creation_1_h_tokens : 0)
+            : undefined;
+    const readTokens = typeof u.cache_read_input_tokens === "number"
+        ? u.cache_read_input_tokens
+        : typeof details.cached_tokens === "number" ? details.cached_tokens : undefined;
+    return { writtenTokens, readTokens };
 }
 
 const LLM_IMAGE_MAX_SIDE = 512;
@@ -719,13 +783,14 @@ async function readSseStream(
     providerKind: ChatCompletionStreamResult["providerKind"],
     callbacks?: ChatCompletionStreamCallbacks,
     stripTimestamps = true,
-): Promise<{ content: string; rawResponse: string }> {
+): Promise<{ content: string; rawResponse: string; cacheUsage: Pick<CacheDebug, "writtenTokens" | "readTokens"> }> {
     if (!response.body) throw new ChatEngineError("流式响应没有 body。");
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let content = "";
     let rawResponse = "";
+    let cacheUsage: Pick<CacheDebug, "writtenTokens" | "readTokens"> = {};
     // 时间戳剥离器会一直扣住流尾巴的 64 个字符等括号闭合，流结束才吐出来。
     // 要求"所见即模型所写"的调用方（独家特调）把它整个关掉：增量来一个字出一个字，
     // 否则模型在末尾写机括标记行（〔记〕这类）时，整行都压在扣留窗里，看起来像卡死。
@@ -736,6 +801,7 @@ async function readSseStream(
     // 容错解析：中转把长 JSON 行切开时做碎片重组，不再静默丢增量（见 sse-json.ts）
     const sseParser = createSseJsonParser();
     const handleParsed = async (parsed: unknown) => {
+        cacheUsage = { ...cacheUsage, ...cacheUsageFromResponse(parsed) };
         const parts = parseProviderStreamDelta(providerKind, parsed);
         if (parts.reasoning) {
             await callbacks?.onReasoningDelta?.(parts.reasoning);
@@ -778,7 +844,7 @@ async function readSseStream(
         content += finalContent;
         await callbacks?.onDelta?.(finalContent);
     }
-    return { content, rawResponse };
+    return { content, rawResponse, cacheUsage };
 }
 
 export async function sendLLMStreamRequest(
@@ -835,7 +901,7 @@ export async function sendLLMStreamRequest(
                 await (pluginCallbacks ?? callbacks)?.onReasoningDelta?.(text);
             },
         };
-        const { content: streamedContent, rawResponse } = await readSseStream(response, request.providerKind, streamLogCallbacks, !options?.skipTimestampStrip);
+        const { content: streamedContent, rawResponse, cacheUsage } = await readSseStream(response, request.providerKind, streamLogCallbacks, !options?.skipTimestampStrip);
         if (!streamedContent.trim()) {
             throw new ChatEngineError("流式响应没有解析到文本增量。");
         }
@@ -855,6 +921,7 @@ export async function sendLLMStreamRequest(
             messages: sanitizedMessages,
             rawResponse: rawOutput,
             reasoning: streamedReasoning.trim() || undefined,
+            cacheDebug: { ...cacheDebugForRequest(request), ...cacheUsage },
         });
 
         if (!options?.skipOutputRegex) {
@@ -988,6 +1055,7 @@ export async function sendLLMRequest(
             messages: sanitizedMessages,
             rawResponse: rawOutput,
             usage: parsed.usage,
+            cacheDebug: { ...cacheDebugForRequest(request), ...cacheUsageFromResponse(data) },
             // 思维链只经 onReasoning 回调透传，之前没进日志；这里单独存一份原文
             reasoning: parsed.reasoning || undefined,
         });
@@ -1128,7 +1196,9 @@ export async function sendLLMToolStreamRequest(
         // 容错解析：中转把超长工具参数 JSON 行切开时做碎片重组，
         // 不再因单行 JSON Parse error 杀掉整条流（写 APP 大参数时高发）
         const sseParser = createSseJsonParser();
+        let cacheUsage: Pick<CacheDebug, "writtenTokens" | "readTokens"> = {};
         const handleParsedDelta = async (data: unknown) => {
+            cacheUsage = { ...cacheUsage, ...cacheUsageFromResponse(data) };
             {
                     const delta = parseProviderStreamDelta(request.providerKind, data);
                     if (delta.reasoning) {
@@ -1206,6 +1276,7 @@ export async function sendLLMToolStreamRequest(
             messages: sanitizedMessages,
             rawResponse: logEntryRaw,
             reasoning: reasoning || undefined,
+            cacheDebug: { ...cacheDebugForRequest(request), ...cacheUsage },
         });
 
         if (!content && toolCalls.length === 0 && truncatedNames.length === 0) {
@@ -1308,6 +1379,7 @@ export async function sendLLMToolRequest(
             messages: sanitizedMessages,
             rawResponse,
             usage: parsed.usage,
+            cacheDebug: { ...cacheDebugForRequest(request), ...cacheUsageFromResponse(data) },
         });
 
         if (!options?.skipOutputRegex && rawOutput) {

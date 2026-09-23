@@ -13,6 +13,15 @@ export type DebugInfo = {
     rawResponse: string;
     timestamp: string;
     usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+    /** 仅保存缓存标识位置和用量数字，不保存额外的提示词或密钥。 */
+    cacheDebug?: {
+        breakpoints: { role: string; messageIndex: number; prefixTextChars: number }[];
+        totalTextChars: number;
+        toolCount: number;
+        toolSchemaChars: number;
+        writtenTokens?: number;
+        readTokens?: number;
+    };
     /** 模型思维链（reasoning/CoT）原文，独立于回复内容存储，避免被清洗吞掉 */
     reasoning?: string;
     /** 调用来源：chat=聊天引擎、background=simpleLLMCall 后台功能（具体功能名看 characterName 标签）、qa=工坊答疑引擎 */
