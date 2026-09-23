@@ -766,6 +766,15 @@ function ApiLogViewer({ onBack }: { onBack: () => void }) {
                                                     {log.usage && (
                                                         <span>Tokens: {log.usage.prompt_tokens ?? "—"} / {log.usage.completion_tokens ?? "—"} / {log.usage.total_tokens ?? "—"}</span>
                                                     )}
+                                                    {log.cacheDebug && (
+                                                        <span>
+                                                            缓存标识：{log.cacheDebug.breakpoints.length
+                                                                ? log.cacheDebug.breakpoints.map(point => `${point.role}${point.messageIndex < 0 ? "(顶层)" : `[${point.messageIndex}]`} 前${point.prefixTextChars}字`).join("、")
+                                                                : "0 个"}
+                                                            {`；总文本 ${log.cacheDebug.totalTextChars} 字；工具 ${log.cacheDebug.toolCount} 个 / ${log.cacheDebug.toolSchemaChars} 字`}
+                                                            {`；写入 ${log.cacheDebug.writtenTokens ?? "未返回"} / 读取 ${log.cacheDebug.readTokens ?? "未返回"} token`}
+                                                        </span>
+                                                    )}
                                                 </div>
                                             </div>
                                             <div className="menu-right">
