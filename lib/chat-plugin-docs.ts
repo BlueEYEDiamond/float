@@ -91,6 +91,7 @@ opts.timeoutMs 覆盖该 transform 的超时（默认 8000ms）。在 transform 
 
 | 点名 | 时机 | payload 字段 |
 |---|---|---|
+| context.prepare | 在线/线下聊天及群聊组装前（含预览） | { sessionId, mode, now, records: [{id,timestamp,content}], query, partition? }；需检查 ctx.meta.contextPartitionVersion === 1。partition 为 { cutoff: 毫秒时间戳, state: "pending" 或 "ready" 或 "error", memory: 摘要文本, error?: 中文错误 }。异步处理前原地设置 pending，成功保存后置 ready；其他状态阻止本轮发送。records 是摘要素材，不可修改宿主记录。宿主按 cutoff 同时过滤历史和跨功能聊天引用，并注入 memory。插件可增大 timeoutMs，但必须自行限制网络等待。 |
 | user.beforeSend | 用户消息落库前 | { text, sessionId, isGroup, cancelled } —— 改 text 可改写；cancelled=true 取消发送 |
 | prompt.system | 组装系统提示词时（单聊/群聊） | { sessionId, isGroup, characterId?, hint } —— 往 hint 追加/改写提示词 |
 | llm.request | 每次 LLM 请求发出前 | { messages, purpose, sessionId?, temperature?, maxTokens? } —— messages 为 OpenAI 形状数组，可增删改；设置 temperature/maxTokens 覆盖采样参数 |

@@ -71,6 +71,7 @@ export type ChatPluginModule = {
  *   message.beforePersist  任何消息写入存储前（用户/角色/系统/群聊全路径）
  */
 export type ChatPluginTransformPoint =
+    | "context.prepare"
     | "user.beforeSend"
     | "prompt.system"
     | "llm.request"
@@ -111,11 +112,27 @@ export type LlmResponsePayload = {
     purpose: string;
 };
 
+/** 组装前的只读素材；插件设置分区参数，宿主统一过滤原文。 */
+export type ChatContextPreparePayload = {
+    sessionId: string;
+    mode: "online" | "offline";
+    now: number;
+    records: { id: string; timestamp: string; content: string }[];
+    query: string;
+    partition?: {
+        cutoff: number;
+        state: "pending" | "ready" | "error";
+        memory: string;
+        error?: string;
+    };
+};
+
 export type MessageBeforePersistPayload = {
     message: ChatMessage;
 };
 
 export type ChatPluginTransformPayloadMap = {
+    "context.prepare": ChatContextPreparePayload;
     "user.beforeSend": UserBeforeSendPayload;
     "prompt.system": PromptSystemPayload;
     "llm.request": LlmRequestPayload;
@@ -205,6 +222,7 @@ export type ChatPluginVarScope = "session" | "character" | "global";
 
 export type ChatPluginContext = {
     meta: {
+        contextPartitionVersion?: 1;
         id: string;
         name: string;
         version?: string;

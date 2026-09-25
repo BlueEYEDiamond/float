@@ -329,6 +329,7 @@ class ChatPluginRuntime {
                 name: activePlugin.installed.manifest.name,
                 version: activePlugin.installed.manifest.version,
                 hostApiVersion: CHAT_PLUGIN_API_VERSION,
+                contextPartitionVersion: 1,
             },
 
             hooks: {
