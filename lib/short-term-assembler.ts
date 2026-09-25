@@ -922,6 +922,7 @@ export function prepareShortTermContext(
     characterId: string,
     appId: string,
     options?: {
+        chatHistoryAfter?: number;
         userName?: string;
         history?: ChatMessage[];
         excludeGroupSessionId?: string;
@@ -948,6 +949,12 @@ export function prepareShortTermContext(
 
     const memConfig = loadMemoryConfig();
     timeline = filterTimelineByAllowedSources(timeline, memConfig.shortTermAllowedSources);
+
+    if (options?.chatHistoryAfter !== undefined) {
+        const cutoff = options.chatHistoryAfter;
+        timeline = timeline.filter(entry => (entry.sourceApp !== "chat" && entry.sourceDetail !== "chat_offline")
+            || Date.parse(entry.timestamp) >= cutoff);
+    }
 
     // Activation context: full timeline for keyword matching (not truncated)
     const wbActivationContext = timeline.slice(-10).map(e => e.content).join("\n");
@@ -1181,6 +1188,7 @@ export function prepareGroupShortTermContext(
     characterIds: string[],
     history: ChatMessage[],
     options?: {
+        chatHistoryAfter?: number;
         userName?: string;
         excludeGroupSessionId?: string;
         excludeOfflineSessionId?: string;
@@ -1208,6 +1216,11 @@ export function prepareGroupShortTermContext(
             promptTimestampOptions: options?.promptTimestampOptions,
         });
         timeline = filterTimelineByAllowedSources(timeline, allowed);
+        if (options?.chatHistoryAfter !== undefined) {
+            const cutoff = options.chatHistoryAfter;
+            timeline = timeline.filter(entry => (entry.sourceApp !== "chat" && entry.sourceDetail !== "chat_offline")
+                || Date.parse(entry.timestamp) >= cutoff);
+        }
         for (const entry of timeline) {
             if (entry.sourceApp === "chat" && entry.sourceDetail === "group" && entry.groupSessionId === options?.excludeGroupSessionId) {
                 continue;
